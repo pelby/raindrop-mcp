@@ -68,8 +68,13 @@ const sseTransports: Record<string, SSEServerTransport> = {};
 const server = http.createServer(async (req, res) => {
     try {
         const url = parseUrl(req.url || '', true);
-        // CORS handling
-        res.setHeader('Access-Control-Allow-Origin', '*');
+        // CORS handling - this server holds a single Raindrop token and is intended for
+        // local use only, so reflect an Origin header only when it is localhost. A
+        // wildcard here let any web page the user visited drive the MCP tools.
+        const reqOrigin = req.headers.origin;
+        if (reqOrigin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(reqOrigin)) {
+            res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+        }
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, MCP-Session-Id');
 
@@ -199,8 +204,8 @@ const server = http.createServer(async (req, res) => {
             try {
                 const sessionId = randomUUID();
                 const transport = new SSEServerTransport('/messages', res, {
-                    allowedOrigins: ['*'], // Allow all origins for development
-                    enableDnsRebindingProtection: false, // Disable for compatibility
+                    allowedOrigins: ['http://localhost', 'http://127.0.0.1'], // local use only
+                    enableDnsRebindingProtection: true, // block DNS-rebinding drive-by attacks
                 });
 
                 transport.onclose = () => {
@@ -262,14 +267,12 @@ const server = http.createServer(async (req, res) => {
                         res.end(JSON.stringify({ error: 'No active SSE session found' }));
                         return;
                     }
-                    // Use the first available transport
-                    const fallbackTransport = availableTransports[0];
-                    if (!fallbackTransport) {
-                        res.writeHead(400, { 'Content-Type': 'application/json' });
-                        res.end(JSON.stringify({ error: 'No active SSE session found' }));
-                        return;
-                    }
-                    await fallbackTransport.handlePostMessage(req, res, body);
+                    // SECURITY: do not route an unattributed message into an arbitrary
+                    // open session (that would let an unauthenticated caller inject
+                    // JSON-RPC into someone else's session). Require an explicit session id.
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'A valid MCP-Session-Id header is required' }));
+                    return;
                 } else {
                     await transport.handlePostMessage(req, res, body);
                 }
@@ -370,7 +373,7 @@ const cleanup = raindropMCP.cleanup.bind(raindropMCP);
 /**
  * Starts the MCP HTTP server and logs endpoints.
  */
-const serverInstance = server.listen(PORT, () => {
+const serverInstance = server.listen(PORT, '127.0.0.1', () => {
     logger.info(`Optimized Raindrop MCP HTTP Server running on port ${PORT}`);
     logger.info(`MCP Inspector: npx @modelcontextprotocol/inspector http://localhost:${PORT}/mcp`);
     logger.info(`Health check: http://localhost:${PORT}/health`);
